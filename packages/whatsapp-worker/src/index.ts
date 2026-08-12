@@ -30,7 +30,6 @@ import fs from 'fs'
 
 // ---- Config ----
 const PORT = Number(process.env.PORT ?? 4500)
-const WS_PORT = Number(process.env.WS_PORT ?? 4501)
 const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info'
 const SESSION_DIR = process.env.SESSION_DIR ?? '/data/whatsapp-session'
 const AI_AGENT_URL = process.env.AI_AGENT_URL ?? 'http://ai-agent:4300'
@@ -64,8 +63,9 @@ function broadcast(msg: Record<string, unknown>) {
   logger.debug({ clients: wsClients.size }, 'Broadcast sent')
 }
 
-// ---- Express app (solo health, SIN QR público) ----
+// ---- Express app + WebSocket (mismo puerto, SIN QR público) ----
 const app = express()
+
 app.get('/health', (_req, res) => {
   res.json({
     status: sessionConnected ? 'connected' : 'disconnected',
@@ -75,8 +75,14 @@ app.get('/health', (_req, res) => {
   })
 })
 
-// ---- WebSocket server (autenticado, emite QR) ----
-const wss = new WebSocketServer({ port: WS_PORT, host: '0.0.0.0' })
+const httpServer = app.listen(PORT, () => {
+  logger.info(`WhatsApp Worker HTTP + WS on :${PORT}`)
+  logger.info('  GET  /health  — status (no QR exposed)')
+  logger.info('  WS   /?token=XXX  — authenticated QR + status stream')
+})
+
+// Attach WebSocket to the SAME HTTP server (port 4500)
+const wss = new WebSocketServer({ server: httpServer, path: '/' })
 
 wss.on('connection', (ws, req) => {
   // Autenticación via query string: ?token=XXXX
@@ -401,18 +407,6 @@ async function processWithAgent(
 
 // ---- Init ----
 async function main() {
-  // HTTP server (solo health, SIN QR público)
-  app.listen(PORT, () => {
-    logger.info(`WhatsApp Worker HTTP on :${PORT}`)
-    logger.info('  GET  /health  — status (no QR exposed)')
-  })
-
-  // WebSocket server (autenticado, para el Dashboard)
-  wss.on('listening', () => {
-    logger.info(`WhatsApp Worker WebSocket on :${WS_PORT}`)
-    logger.info('  WS   /?token=XXX  — authenticated QR + status stream')
-  })
-
   await startWhatsAppClient()
   logger.info('WhatsApp Worker initialized')
 }
