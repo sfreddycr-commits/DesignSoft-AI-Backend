@@ -1,15 +1,11 @@
 // ============================================================
-// Hermes Agent — LLM Client
+// Hermes Agent — LLM Client (DeepSeek directo)
 // ============================================================
-// Cliente para OpenRouter / OpenAI compatible con tools.
-// ============================================================
-
 import axios from 'axios'
 
 const LLM_PROVIDER = process.env.LLM_PROVIDER ?? 'deepseek'
 const LLM_MODEL = process.env.LLM_MODEL ?? 'deepseek-chat'
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? ''
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? process.env.OPENROUTER_API_KEY ?? 'sk-XEr7EGerRjcEjMljHuQHMn2WiR6nz6fa8rWQGFeJoLSsDpAU'
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? 'sk-734c03a1dd4f4897b0263c4a2b9224f5'
 
 const baseURLs: Record<string, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
@@ -17,15 +13,11 @@ const baseURLs: Record<string, string> = {
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
 }
 const baseURL = baseURLs[LLM_PROVIDER] ?? baseURLs.deepseek
-const apiKey = LLM_PROVIDER === 'openai' ? OPENAI_API_KEY : DEEPSEEK_API_KEY
+const apiKey = LLM_PROVIDER === 'openai' ? (process.env.OPENAI_API_KEY ?? '') : DEEPSEEK_API_KEY
 
 export interface LLMTool {
   type: 'function'
-  function: {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-  }
+  function: { name: string; description: string; parameters: Record<string, unknown> }
 }
 
 export interface LLMMessage {
@@ -33,35 +25,18 @@ export interface LLMMessage {
   content: string
   name?: string
   tool_call_id?: string
-  tool_calls?: Array<{
-    id: string
-    type: 'function'
-    function: { name: string; arguments: string }
-  }>
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
 }
 
 export interface LLMResponse {
   content: string | null
-  tool_calls: Array<{
-    id: string
-    name: string
-    arguments: Record<string, unknown>
-  }>
+  tool_calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
   finish_reason: string
 }
 
-export async function callLLM(
-  systemPrompt: string,
-  messages: LLMMessage[],
-  tools: LLMTool[] = [],
-): Promise<LLMResponse> {
+export async function callLLM(systemPrompt: string, messages: LLMMessage[], tools: LLMTool[] = []): Promise<LLMResponse> {
   if (!apiKey) {
-    // Stub para testing sin API key
-    return {
-      content: '[stub] No hay API key. Configura OPENROUTER_API_KEY en el .env.',
-      tool_calls: [],
-      finish_reason: 'stop',
-    }
+    return { content: '[stub] No API key configurada.', tool_calls: [], finish_reason: 'stop' }
   }
 
   const body: Record<string, unknown> = {
@@ -76,14 +51,8 @@ export async function callLLM(
   }
 
   try {
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://designsoftcr.com',
-      'X-Title': 'DesignSoft AI - Hermes Agent',
-      'Content-Type': 'application/json',
-    }
     const res = await axios.post(baseURL, body, {
-      headers,
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       timeout: 30000,
     })
 
@@ -99,14 +68,10 @@ export async function callLLM(
       })
     }
 
-    return {
-      content: msg.content ?? null,
-      tool_calls,
-      finish_reason: choice?.finish_reason ?? 'stop',
-    }
+    return { content: msg.content ?? null, tool_calls, finish_reason: choice?.finish_reason ?? 'stop' }
   } catch (err: any) {
-    const msg = err?.response?.data ?? err?.message
-    console.error('[hermes/llm] error:', msg)
+    const errMsg = err?.response?.data ?? err?.message
+    console.error('[hermes/llm] error:', JSON.stringify(errMsg).slice(0, 300))
     return { content: null, tool_calls: [], finish_reason: 'error' }
   }
 }
