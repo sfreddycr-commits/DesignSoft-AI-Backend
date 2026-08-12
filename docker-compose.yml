@@ -1,0 +1,90 @@
+name: designsoft-ai
+
+services:
+  traefik:
+    image: traefik:v3
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@wiazart.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-data:/letsencrypt
+    networks:
+      - dsai
+
+  dashboard:
+    image: ghcr.io/sfreddycr-commits/omnichannel-ai-core:latest
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`omnichannel.wiazart.com`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dashboard.loadbalancer.server.port=80"
+    networks:
+      - dsai
+
+  ai-agent:
+    build: ./packages/ai-agent
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - dsai
+    expose:
+      - "4300"
+
+  crm:
+    build: ./packages/crm
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - dsai
+    expose:
+      - "4400"
+    volumes:
+      - crm-data:/data
+
+  voice-engine:
+    build: ./packages/voice-engine
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - dsai
+    expose:
+      - "3000"
+
+  whatsapp-worker:
+    build: ./packages/whatsapp-worker
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - dsai
+    expose:
+      - "4500"
+    volumes:
+      - whatsapp-data:/data/whatsapp-session
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whatsapp.rule=Host(`qr.omnichannel.wiazart.com`)"
+      - "traefik.http.routers.whatsapp.entrypoints=websecure"
+      - "traefik.http.routers.whatsapp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.whatsapp.loadbalancer.server.port=4500"
+
+networks:
+  dsai:
+    driver: bridge
+
+volumes:
+  traefik-data:
+  crm-data:
+  whatsapp-data:
