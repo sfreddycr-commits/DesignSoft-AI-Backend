@@ -1,10 +1,11 @@
 FROM node:22-alpine AS build
+ARG CACHEBUST=1
 WORKDIR /app
 RUN corepack enable
 COPY packages/whatsapp-worker/package.json ./
 RUN npm install
 COPY packages/whatsapp-worker/ ./
-RUN npm run build && echo "BUILD TIMESTAMP $(date +%s)"
+RUN npm run build
 
 FROM node:22-alpine
 WORKDIR /app
