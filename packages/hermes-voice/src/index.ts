@@ -37,7 +37,8 @@ async function main() {
 
   // 1. Conectar a ARI via WebSocket para eventos Stasis
   const wsUrl = `${ARI_URL.replace('http', 'ws')}/ari/events?api_key=${ARI_USER}:${ARI_PASS}&app=hermes-voice`
-  const ws = new WebSocket(wsUrl)
+  log(`Connecting to ARI WS: ${wsUrl.replace(ARI_PASS, '***')}`)
+  const ws = new WebSocket(wsUrl, { headers: { Authorization: AUTH_HEADER.Authorization } })
 
   ws.on('open', () => log('Connected to ARI WebSocket'))
 
