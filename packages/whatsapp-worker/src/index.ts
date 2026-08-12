@@ -151,32 +151,37 @@ async function handleIncomingMessage(
   sock: WASocket,
   msg: proto.IWebMessageInfo
 ): Promise<void> {
-  const from = msg.key.remoteJid ?? ''
+  const from = msg.key?.remoteJid ?? ''
   const isGroup = from.endsWith('@g.us')
   const phone = from.replace(/@s\.whatsapp\.net|@c\.us|@g\.us/g, '')
 
-  logger.info({ from, type: msg.messageType }, '📩 Message received')
+  logger.info({ from }, '📩 Message received')
 
   // 1) Crear/actualizar contacto en CRM
   const customer = await upsertCustomer(phone, isGroup)
 
   // 2) Extraer texto (o transcribir audio)
   let text: string | null = null
-  const audio = msg.message.audioMessage
+  const message = msg.message
+  if (!message) {
+    logger.info({ from }, 'Empty message, ignored')
+    return
+  }
+  const audio = (message as any).audioMessage
 
-  if (msg.message.conversation) {
-    text = msg.message.conversation
-  } else if (msg.message.extendedTextMessage?.text) {
-    text = msg.message.extendedTextMessage.text
+  if ((message as any).conversation) {
+    text = (message as any).conversation
+  } else if ((message as any).extendedTextMessage?.text) {
+    text = (message as any).extendedTextMessage.text
   } else if (audio) {
     // Audio → voice-engine
     text = await transcribeAudio(sock, msg, audio)
-  } else if (msg.message.imageMessage?.caption) {
-    text = msg.message.imageMessage.caption || '[imagen]'
-  } else if (msg.message.documentMessage?.caption) {
-    text = msg.message.documentMessage.caption || '[documento]'
-  } else if (msg.message.videoMessage?.caption) {
-    text = msg.message.videoMessage.caption || '[video]'
+  } else if ((message as any).imageMessage?.caption) {
+    text = (message as any).imageMessage.caption || '[imagen]'
+  } else if ((message as any).documentMessage?.caption) {
+    text = (message as any).documentMessage.caption || '[documento]'
+  } else if ((message as any).videoMessage?.caption) {
+    text = (message as any).videoMessage.caption || '[video]'
   }
 
   if (!text) {
@@ -219,18 +224,26 @@ async function upsertCustomer(phone: string, isGroup: boolean) {
 async function transcribeAudio(
   sock: WASocket,
   msg: proto.IWebMessageInfo,
-  audio: proto.IAudioMessage
+  audio: any
 ): Promise<string | null> {
   try {
-    // Descargar el audio
-    const stream = await sock.downloadMediaMessage({ message: msg.message! } as any)
+    // Descargar el audio via Baileys
+    const downloadFn = (sock as any).downloadMediaMessage
+    if (!downloadFn) {
+      logger.warn('Baileys downloadMediaMessage not available in this version')
+      return '[nota de voz — descargador no disponible]'
+    }
+    const stream = await downloadFn.call(sock, { message: msg.message })
     const buffer = await stream.toBuffer()
-    logger.info({ size: buffer.length, mimetype: audio.mimetype }, '🎙️ Audio received')
+    logger.info({ size: buffer.length, mimetype: audio?.mimetype }, '🎙️ Audio received')
 
     // Subir a voice-engine
     const FormData = (await import('form-data')).default
     const form = new FormData()
-    form.append('audio', buffer, { filename: 'audio.ogg', contentType: audio.mimetype ?? 'audio/ogg' })
+    form.append('audio', buffer, {
+      filename: 'audio.ogg',
+      contentType: audio?.mimetype ?? 'audio/ogg',
+    })
 
     const res = await axios.post(`${VOICE_ENGINE_URL}/api/stt`, form, {
       headers: form.getHeaders(),
