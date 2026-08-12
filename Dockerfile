@@ -15,5 +15,5 @@ COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/package.json /app/package.json
 RUN mkdir -p /data/whatsapp-session
 VOLUME ["/data/whatsapp-session"]
-EXPOSE 4500
+EXPOSE 4500 4501
 CMD ["node", "dist/index.js"]
