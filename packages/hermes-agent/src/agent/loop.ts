@@ -143,9 +143,15 @@ export async function processMessage(
     log('error', 'No se obtuvo respuesta del LLM')
   }
 
-  // 6. Auto-llamar send_message si no se hizo ya
-  // (El LLM deberia haberlo hecho, pero como fallback...)
-  // Skip por ahora — confiamos en que el LLM lo hace
+  // 6. Fallback: si el LLM no llamó send_message, lo hacemos automáticamente
+  const lastToolCalls = messages.filter(m => m.role === 'assistant' && m.tool_calls)
+    .flatMap(m => m.tool_calls ?? [])
+  const alreadySent = lastToolCalls.some(tc => tc?.function?.name === 'send_message')
+
+  if (finalReply && !alreadySent) {
+    log('auto_send', 'LLM no llamó send_message → enviando automáticamente')
+    await executeTool('send_message', { phone, text: finalReply }, phone)
+  }
 
   return { reply: finalReply, reasoning, steps }
 }
