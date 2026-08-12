@@ -5,17 +5,19 @@
 // ============================================================
 
 import axios from 'axios'
-import 'dotenv/config'
 
-const LLM_PROVIDER = process.env.LLM_PROVIDER ?? 'openrouter'
-const LLM_MODEL = process.env.LLM_MODEL ?? 'deepseek/deepseek-v4-pro'
+const LLM_PROVIDER = process.env.LLM_PROVIDER ?? 'deepseek'
+const LLM_MODEL = process.env.LLM_MODEL ?? 'deepseek-chat'
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? ''
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'sk-XEr7EGerRjcEjMljHuQHMn2WiR6nz6fa8rWQGFeJoLSsDpAU'
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? process.env.OPENROUTER_API_KEY ?? 'sk-XEr7EGerRjcEjMljHuQHMn2WiR6nz6fa8rWQGFeJoLSsDpAU'
 
-const baseURL = LLM_PROVIDER === 'openai'
-  ? 'https://api.openai.com/v1/chat/completions'
-  : 'https://openrouter.ai/api/v1/chat/completions'
-const apiKey = LLM_PROVIDER === 'openai' ? OPENAI_API_KEY : OPENROUTER_API_KEY
+const baseURLs: Record<string, string> = {
+  openai: 'https://api.openai.com/v1/chat/completions',
+  openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+  deepseek: 'https://api.deepseek.com/v1/chat/completions',
+}
+const baseURL = baseURLs[LLM_PROVIDER] ?? baseURLs.deepseek
+const apiKey = LLM_PROVIDER === 'openai' ? OPENAI_API_KEY : DEEPSEEK_API_KEY
 
 export interface LLMTool {
   type: 'function'
@@ -74,8 +76,14 @@ export async function callLLM(
   }
 
   try {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://designsoftcr.com',
+      'X-Title': 'DesignSoft AI - Hermes Agent',
+      'Content-Type': 'application/json',
+    }
     const res = await axios.post(baseURL, body, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers,
       timeout: 30000,
     })
 
