@@ -1,25 +1,19 @@
 FROM node:22-alpine AS build
-ARG SERVICE_DIR=packages/whatsapp-worker
-ARG EXPOSE_PORT=4500
-ARG VOLUME_PATH=/data/whatsapp-session
-ARG CACHEBUST=1
 WORKDIR /app
 RUN corepack enable
-COPY ${SERVICE_DIR}/package.json ./
+COPY packages/hermes-agent/package.json ./
 RUN npm install
-COPY ${SERVICE_DIR}/ ./
+COPY packages/hermes-agent/ ./
 RUN npm run build
 
 FROM node:22-alpine
-ARG EXPOSE_PORT=4500
-ARG VOLUME_PATH=/data/whatsapp-session
 WORKDIR /app
 RUN apk add --no-cache curl
 RUN corepack enable
 COPY --from=build /app/dist /app/dist
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/package.json /app/package.json
-RUN mkdir -p ${VOLUME_PATH}
-VOLUME [${VOLUME_PATH}]
-EXPOSE ${EXPOSE_PORT}
+RUN mkdir -p /data/memory
+VOLUME ["/data/memory"]
+EXPOSE 5000
 CMD ["node", "dist/index.js"]

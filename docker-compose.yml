@@ -34,6 +34,23 @@ services:
     networks:
       - dsai
 
+  hermes-agent:
+    build: ./packages/hermes-agent
+    container_name: hermes-agent
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - dsai
+    expose:
+      - "5000"
+    volumes:
+      - hermes-data:/data/memory
+    depends_on:
+      - crm
+      - whatsapp-worker
+      - voice-engine
+      - ai-agent
+
   ai-agent:
     build: ./packages/ai-agent
     restart: unless-stopped
@@ -88,3 +105,4 @@ volumes:
   traefik-data:
   crm-data:
   whatsapp-data:
+  hermes-data:
