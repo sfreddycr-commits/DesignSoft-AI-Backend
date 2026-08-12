@@ -1,9 +1,9 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable
-COPY package.json ./
+COPY packages/whatsapp-worker/package.json ./
 RUN npm install
-COPY . .
+COPY packages/whatsapp-worker/ ./
 RUN npm run build
 
 FROM node:22-alpine
