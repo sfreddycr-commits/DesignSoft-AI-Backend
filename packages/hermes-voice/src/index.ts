@@ -41,6 +41,13 @@ async function ariGetBuffer(path: string) {
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
+// Fallback TTS: genera un tono + reproduce el texto como "digits" si es corto
+async function fallbackTTS(channelId: string, text: string) {
+  log(`TTS fallback: "${text.slice(0, 80)}"`)
+  // Reproducir un beep para marcar la respuesta
+  try { await ariPost(`/channels/${channelId}/play`, { media: 'tone:beep' }) } catch {}
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -124,8 +131,8 @@ async function handleCall(channelId: string) {
       if (!reply) break
       log(`🧠 "${reply.slice(0, 120)}..."`)
 
-      // ElevenLabs TTS
-      if (ELEVENLABS_API_KEY) {
+      // ElevenLabs TTS (o fallback)
+      if (ELEVENLABS_API_KEY && ELEVENLABS_API_KEY.startsWith('sk_')) {
         try {
           const r = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
             text: reply, model_id: 'eleven_multilingual_v2',
@@ -134,15 +141,15 @@ async function handleCall(channelId: string) {
             headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
             responseType: 'arraybuffer', timeout: 15000,
           })
-
           const wavFile = `${SOUNDS_DIR}/tts-${Date.now()}.mp3`
           fs.writeFileSync(wavFile, Buffer.from(r.data))
           const soundName = `custom/${path.basename(wavFile).replace('.mp3', '')}`
-          log(`TTS: ${soundName}`)
-
-          // Reproducir
+          log(`TTS ElevenLabs: ${soundName}`)
           await ariPost(`/channels/${channelId}/play`, { media: `sound:${soundName}` })
-        } catch (err: any) { log(`TTS error: ${err.message}`); break }
+        } catch (err: any) { log(`ElevenLabs error: ${err.message}`) }
+      } else {
+        // Fallback: generar WAV con espeak o beep
+        await fallbackTTS(channelId, reply)
       }
     }
   } catch (err: any) { log(`Error: ${err.message}`) }
