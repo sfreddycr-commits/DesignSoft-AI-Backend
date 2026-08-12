@@ -88,22 +88,28 @@ async function handleCall(channelId: string) {
     try { await ariPost(`/channels/${channelId}/play`, { media: 'sound:greeting' }) } catch (e: any) { log(`Greeting error: ${e.message}`) }
     await sleep(500)
 
-    // Generar saludo personalizado con ElevenLabs (voces naturales)
+    // Generar saludo personalizado con ElevenLabs (voces naturales, ulaw)
     if (ELEVENLABS_API_KEY) {
       try {
         const text = 'Hola, soy Hermes, el asistente virtual de DesignSoft. ¿En qué puedo ayudarte hoy?'
-        const r = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-          text, model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        }, {
-          headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-          responseType: 'arraybuffer', timeout: 15000,
-        })
-        const fname = `greeting-${Date.now()}.mp3`
+        const r = await axios.post(
+          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=ulaw_8000`,
+          {
+            text,
+            model_id: 'eleven_multilingual_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          },
+          {
+            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+            responseType: 'arraybuffer',
+            timeout: 15000,
+          }
+        )
+        const fname = `greeting-${Date.now()}.ulaw`
         const fpath = `${SOUNDS_DIR}/${fname}`
         fs.writeFileSync(fpath, Buffer.from(r.data))
-        const sname = `custom/${path.basename(fpath).replace('.mp3','')}`
-        log(`TTS greeting: ${sname}`)
+        const sname = `custom/${fname.replace('.ulaw','')}`
+        log(`TTS greeting (ulaw): ${sname}`)
         await ariPost(`/channels/${channelId}/play`, { media: `sound:${sname}` }).catch((e: any) => log(`TTS play: ${e.message}`))
       } catch (e: any) { log(`TTS error: ${e.message}`) }
     }
@@ -156,21 +162,33 @@ async function handleCall(channelId: string) {
       // ElevenLabs TTS (o fallback)
       if (ELEVENLABS_API_KEY && ELEVENLABS_API_KEY.startsWith('sk_')) {
         try {
-          const r = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-            text: reply, model_id: 'eleven_multilingual_v2',
-            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-          }, {
-            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-            responseType: 'arraybuffer', timeout: 15000,
-          })
-          const wavFile = `${SOUNDS_DIR}/tts-${Date.now()}.mp3`
-          fs.writeFileSync(wavFile, Buffer.from(r.data))
-          const soundName = `custom/${path.basename(wavFile).replace('.mp3', '')}`
-          log(`TTS ElevenLabs: ${soundName}`)
+          // Solicitamos formato ulaw_8000 nativo de Asterisk para evitar
+          // tener que convertir el audio (MP3 no es reproducible por defecto).
+          const r = await axios.post(
+            `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=ulaw_8000`,
+            {
+              text: reply,
+              model_id: 'eleven_multilingual_v2',
+              voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+            },
+            {
+              headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+              responseType: 'arraybuffer',
+              timeout: 15000,
+            }
+          )
+          const filename = `tts-${Date.now()}.ulaw`
+          const filepath = `${SOUNDS_DIR}/${filename}`
+          fs.writeFileSync(filepath, Buffer.from(r.data))
+          const soundName = `custom/${filename.replace('.ulaw', '')}`
+          log(`TTS ElevenLabs (ulaw): ${soundName}`)
+          
           await ariPost(`/channels/${channelId}/play`, { media: `sound:${soundName}` })
-        } catch (err: any) { log(`ElevenLabs error: ${err.message}`) }
+        } catch (err: any) {
+          log(`ElevenLabs error: ${err.message}`)
+          await fallbackTTS(channelId, reply)
+        }
       } else {
-        // Fallback: generar WAV con espeak o beep
         await fallbackTTS(channelId, reply)
       }
     }
