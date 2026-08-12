@@ -260,13 +260,13 @@ async function main() {
   })
 
   // Registrar callbacks
-  transport.onMessage(async (msg) => {
-    await handleMessage(transport, msg).catch((err) =>
+  transport!.onMessage(async (msg) => {
+    await handleMessage(transport!, msg).catch((err) =>
       logger.error({ err }, 'Handle message error'),
     )
   })
 
-  transport.onStatusChange((status, data) => {
+  transport!.onStatusChange((status, data) => {
     transportStatus = status
     logger.info({ status, data }, 'Transport status changed')
 
@@ -286,7 +286,7 @@ async function main() {
     }
   })
 
-  await transport.initialize()
+  await transport!.initialize()
   logger.info({ provider: PROVIDER }, 'WhatsApp Worker initialized')
 }
 
