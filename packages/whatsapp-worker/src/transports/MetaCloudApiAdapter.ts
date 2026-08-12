@@ -6,7 +6,7 @@
 // ============================================================
 
 import express, { type Request, type Response } from 'express'
-import type { WhatsAppTransport, WhatsAppMessage, TransportStatus } from './IWhatsAppTransport'
+import type { WhatsAppTransport, WhatsAppMessage, TransportStatus } from './IWhatsAppTransport.js'
 import pino from 'pino'
 
 export class MetaCloudApiAdapter implements WhatsAppTransport {

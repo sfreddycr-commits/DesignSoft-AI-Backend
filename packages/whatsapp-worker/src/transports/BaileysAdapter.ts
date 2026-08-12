@@ -15,7 +15,7 @@ import makeWASocket, {
 import type { Boom } from '@hapi/boom'
 import pino from 'pino'
 import fs from 'fs'
-import type { WhatsAppTransport, WhatsAppMessage, TransportStatus } from './IWhatsAppTransport'
+import type { WhatsAppTransport, WhatsAppMessage, TransportStatus } from './IWhatsAppTransport.js'
 
 export class BaileysAdapter implements WhatsAppTransport {
   private sock: WASocket | null = null

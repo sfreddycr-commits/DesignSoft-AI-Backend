@@ -10,8 +10,8 @@ import express from 'express'
 import { WebSocketServer, WebSocket } from 'ws'
 import pino from 'pino'
 import axios from 'axios'
-import type { WhatsAppTransport, TransportStatus } from './transports/IWhatsAppTransport'
-import { createWhatsAppTransport } from './transports/WhatsAppFactory'
+import type { WhatsAppTransport, TransportStatus } from './transports/IWhatsAppTransport.js'
+import { createWhatsAppTransport } from './transports/WhatsAppFactory.js'
 
 // ---- Config ----
 const PORT = Number(process.env.PORT ?? 4500)

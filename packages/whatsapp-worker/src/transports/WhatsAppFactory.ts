@@ -4,9 +4,9 @@
 // Instancia el adaptador correcto según WHATSAPP_PROVIDER.
 // ============================================================
 
-import type { WhatsAppTransport } from './IWhatsAppTransport'
-import { BaileysAdapter } from './BaileysAdapter'
-import { MetaCloudApiAdapter } from './MetaCloudApiAdapter'
+import type { WhatsAppTransport } from './IWhatsAppTransport.js'
+import { BaileysAdapter } from './BaileysAdapter.js'
+import { MetaCloudApiAdapter } from './MetaCloudApiAdapter.js'
 
 export type WhatsAppProvider = 'baileys' | 'meta_api'
 
