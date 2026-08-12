@@ -37,6 +37,7 @@ const logger = pino({
 })
 
 // ---- Estado ----
+let transport: WhatsAppTransport | null = null
 let transportStatus: TransportStatus = 'disconnected'
 let currentQR: string | null = null
 const wsClients = new Set<WebSocket>()
@@ -60,6 +61,23 @@ app.get('/health', (_req, res) => {
     qr_available: !!currentQR,
     ws_clients: wsClients.size,
   })
+})
+
+// POST /api/send → usado por hermes-agent para enviar respuestas a WhatsApp
+app.post('/api/send', async (req, res) => {
+  try {
+    const { phone, text } = req.body as { phone: string; text: string }
+    if (!phone || !text) return res.status(400).json({ error: 'phone and text required' })
+    if (!transport) return res.status(503).json({ error: 'Transport not ready' })
+
+    const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`
+    await transport.sendMessage(jid, text)
+    logger.info({ phone }, 'Message sent via /api/send')
+    res.json({ status: 'sent', phone })
+  } catch (err: any) {
+    logger.error({ err: err.message }, '/api/send failed')
+    res.status(500).json({ error: err.message })
+  }
 })
 
 const httpServer = app.listen(PORT, () => {
@@ -232,7 +250,7 @@ async function handleMessage(transport: WhatsAppTransport, msg: any) {
 async function main() {
   logger.info({ provider: PROVIDER }, 'Creating WhatsApp transport')
 
-  const transport: WhatsAppTransport = createWhatsAppTransport({
+  transport = createWhatsAppTransport({
     provider: PROVIDER,
     sessionDir: SESSION_DIR,
     metaToken: META_TOKEN,
