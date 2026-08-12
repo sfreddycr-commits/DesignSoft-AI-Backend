@@ -5,6 +5,7 @@ COPY packages/whatsapp-worker/package.json ./
 RUN npm install
 COPY packages/whatsapp-worker/ ./
 RUN npm run build
+RUN echo "=== Verifying dist ===" && ls -la dist/ && ls -la dist/transports/ 2>/dev/null || echo "NO transports dir"
 
 FROM node:22-alpine
 WORKDIR /app
