@@ -1,43 +1,30 @@
 // ============================================================
-// DesignSoft AI — WhatsApp Worker
+// DesignSoft AI — WhatsApp Worker (Transport-Agnostic)
 // ============================================================
-// Cliente Baileys que:
-//  1. Mantiene sesión activa (credenciales persistidas)
-//  2. Escucha mensajes entrantes
-//  3. Crea/actualiza contacto en CRM
-//  4. Envía texto al ai-agent
-//  5. Responde al usuario en WhatsApp
-//  6. Mensajes de audio → voice-engine para transcripción
-//
-// Seguridad: el QR NO se expone por HTTP. Solo se emite vía
-// WebSocket autenticado al Dashboard.
+// Soporta Baileys (QR) y Meta Cloud API (Webhook) vía
+// Strategy Pattern. Cambia con WHATSAPP_PROVIDER en .env
 // ============================================================
 
 import 'dotenv/config'
 import express from 'express'
 import { WebSocketServer, WebSocket } from 'ws'
 import pino from 'pino'
-import makeWASocket, {
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  DisconnectReason,
-  type WASocket,
-  type proto,
-} from '@whiskeysockets/baileys'
-import { Boom } from '@hapi/boom'
 import axios from 'axios'
-import fs from 'fs'
+import type { WhatsAppTransport, TransportStatus } from './transports/IWhatsAppTransport'
+import { createWhatsAppTransport } from './transports/WhatsAppFactory'
 
 // ---- Config ----
 const PORT = Number(process.env.PORT ?? 4500)
 const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info'
+const PROVIDER = (process.env.WHATSAPP_PROVIDER ?? 'baileys') as 'baileys' | 'meta_api'
 const SESSION_DIR = process.env.SESSION_DIR ?? '/data/whatsapp-session'
+const META_TOKEN = process.env.META_TOKEN ?? ''
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID ?? ''
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN ?? 'designsoft_webhook_2026'
 const AI_AGENT_URL = process.env.AI_AGENT_URL ?? 'http://ai-agent:4300'
 const CRM_URL = process.env.CRM_URL ?? 'http://crm:4400'
 const VOICE_ENGINE_URL = process.env.VOICE_ENGINE_URL ?? 'http://voice-engine:3000'
 const AGENT_DEPARTMENT = process.env.AGENT_DEPARTMENT ?? 'soporte'
-// Token compartido entre Dashboard y Worker. El Dashboard lo envía
-// en la query string del WebSocket: ws://host:port/?token=XXXX
 const WS_AUTH_TOKEN = process.env.WS_AUTH_TOKEN ?? 'change-me-in-prod'
 
 // ---- Logger ----
@@ -50,9 +37,8 @@ const logger = pino({
 })
 
 // ---- Estado ----
+let transportStatus: TransportStatus = 'disconnected'
 let currentQR: string | null = null
-let currentSocket: WASocket | null = null
-let sessionConnected = false
 const wsClients = new Set<WebSocket>()
 
 function broadcast(msg: Record<string, unknown>) {
@@ -60,32 +46,29 @@ function broadcast(msg: Record<string, unknown>) {
   for (const ws of wsClients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload)
   }
-  logger.debug({ clients: wsClients.size }, 'Broadcast sent')
 }
 
-// ---- Express app + WebSocket (mismo puerto, SIN QR público) ----
+// ---- Express + WebSocket (mismo puerto) ----
 const app = express()
+app.use(express.json())
 
 app.get('/health', (_req, res) => {
   res.json({
-    status: sessionConnected ? 'connected' : 'disconnected',
+    status: transportStatus,
     service: 'whatsapp-worker',
+    provider: PROVIDER,
     qr_available: !!currentQR,
     ws_clients: wsClients.size,
   })
 })
 
 const httpServer = app.listen(PORT, () => {
-  logger.info(`WhatsApp Worker HTTP + WS on :${PORT}`)
-  logger.info('  GET  /health  — status (no QR exposed)')
-  logger.info('  WS   /?token=XXX  — authenticated QR + status stream')
+  logger.info({ provider: PROVIDER }, `WhatsApp Worker on :${PORT}`)
 })
 
-// Attach WebSocket to the SAME HTTP server (port 4500)
 const wss = new WebSocketServer({ server: httpServer, path: '/' })
 
 wss.on('connection', (ws, req) => {
-  // Autenticación via query string: ?token=XXXX
   const reqUrl = req.url ?? '/'
   const url = new URL(reqUrl, `http://${req.headers.host ?? 'localhost'}`)
   const token = url.searchParams.get('token')
@@ -96,11 +79,10 @@ wss.on('connection', (ws, req) => {
     return
   }
 
-  // CORS: aceptar el origen del Dashboard
   const allowedOrigins = [
     'https://omnichannel.wiazart.com',
     'https://wiazart.com',
-    'http://localhost:5173', // dev
+    'http://localhost:5173',
     'http://localhost:3000',
   ]
   const origin = req.headers.origin
@@ -111,27 +93,40 @@ wss.on('connection', (ws, req) => {
   }
 
   wsClients.add(ws)
-  logger.info(
-    { ip: req.socket.remoteAddress, total: wsClients.size },
-    'WS client authenticated',
-  )
+  logger.info({ total: wsClients.size }, 'WS client authenticated')
 
-  // Enviar estado actual al conectarse
-  ws.send(
-    JSON.stringify({
-      type: 'status',
-      connected: sessionConnected,
-      qr_available: !!currentQR,
-    }),
-  )
+  // Enviar estado actual
+  ws.send(JSON.stringify({
+    type: 'status',
+    connected: transportStatus === 'connected',
+    qr_available: !!currentQR,
+    provider: PROVIDER,
+  }))
 
   ws.on('message', async (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
-      await handleWsMessage(ws, msg)
+      switch (msg?.type) {
+        case 'get_qr':
+          ws.send(typeof msg !== 'string' ? JSON.stringify({
+            type: 'qr',
+            data: currentQR,
+            generated: !!currentQR,
+          }) : msg)
+          break
+        case 'get_status':
+          ws.send(JSON.stringify({
+            type: 'status',
+            connected: transportStatus === 'connected',
+            qr_available: !!currentQR,
+            provider: PROVIDER,
+          }))
+          break
+        default:
+          break
+      }
     } catch (err) {
       logger.error({ err: (err as Error).message }, 'WS message error')
-      ws.send(JSON.stringify({ type: 'error', error: (err as Error).message }))
     }
   })
 
@@ -139,200 +134,9 @@ wss.on('connection', (ws, req) => {
     wsClients.delete(ws)
     logger.info({ total: wsClients.size }, 'WS client disconnected')
   })
-
-  ws.on('error', (err) => {
-    logger.error({ err: err.message }, 'WS error')
-  })
 })
 
-async function handleWsMessage(ws: WebSocket, msg: any): Promise<void> {
-  logger.info({ type: msg?.type }, 'WS message received')
-
-  switch (msg?.type) {
-    case 'get_qr': {
-      // Si ya está conectado, no hay QR
-      if (sessionConnected) {
-        ws.send(JSON.stringify({ type: 'status', connected: true, qr_available: false }))
-        return
-      }
-      // Devolver QR actual (puede ser null si no se ha generado aún)
-      ws.send({
-        type: 'qr',
-        data: currentQR,
-        generated: !!currentQR,
-      } as any)
-      break
-    }
-
-    case 'get_status': {
-      ws.send(JSON.stringify({
-        type: 'status',
-        connected: sessionConnected,
-        qr_available: !!currentQR,
-      }))
-      break
-    }
-
-    case 'logout': {
-      logger.info('Logout requested via WS')
-      if (currentSocket) {
-        try {
-          await currentSocket.logout()
-        } catch (err) {
-          logger.error({ err: (err as Error).message }, 'Logout failed')
-        }
-      }
-      break
-    }
-
-    case 'restart': {
-      logger.info('Restart requested via WS')
-      if (currentSocket) {
-        try {
-          await (currentSocket as any).end({})
-        } catch (err) {
-          logger.error({ err: (err as Error).message }, 'End failed')
-        }
-      }
-      // Re-arrancar después de un delay
-      setTimeout(() => startWhatsAppClient(), 2000)
-      break
-    }
-
-    default:
-      ws.send(JSON.stringify({ type: 'error', error: `Unknown message type: ${msg?.type}` }))
-  }
-}
-
-// ---- Cliente WhatsApp ----
-async function startWhatsAppClient() {
-  if (!fs.existsSync(SESSION_DIR)) {
-    fs.mkdirSync(SESSION_DIR, { recursive: true })
-  }
-
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
-  const { version } = await fetchLatestBaileysVersion()
-
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false,
-    logger: pino({ level: 'warn' }) as any,
-    generateHighQualityLinkPreview: true,
-    getMessage: async () => undefined as any,
-  })
-
-  currentSocket = sock
-
-  // ── Manejo de conexión / QR ──
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update
-
-    if (qr) {
-      currentQR = qr
-      logger.info('📱 QR code generated (broadcasting to WS clients)')
-      // EMITIR QR a todos los dashboards conectados
-      broadcast({ type: 'qr', data: qr, generated: true })
-    }
-
-    if (connection === 'open') {
-      sessionConnected = true
-      currentQR = null
-      logger.info('✅ WhatsApp Session Authenticated')
-      broadcast({ type: 'status', connected: true, qr_available: false })
-    }
-
-    if (connection === 'close') {
-      sessionConnected = false
-      const reason = (lastDisconnect?.error as Boom)?.output?.statusCode
-      const shouldReconnect = reason !== DisconnectReason.loggedOut
-      logger.warn({ reason, shouldReconnect }, '⚠️  Connection closed')
-      broadcast({ type: 'status', connected: false, qr_available: !!currentQR })
-      if (shouldReconnect) {
-        logger.info('Reconnecting in 5s...')
-        setTimeout(() => startWhatsAppClient(), 5000)
-      } else {
-        logger.error('Logged out. Delete session dir and scan QR again.')
-        broadcast({ type: 'status', connected: false, qr_available: true, logged_out: true })
-      }
-    }
-  })
-
-  // ── Persistir credenciales ──
-  sock.ev.on('creds.update', saveCreds)
-
-  // ── Mensajes entrantes ──
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return
-
-    for (const msg of messages) {
-      if (!msg.message) continue
-      if (msg.key?.fromMe) continue
-
-      await handleIncomingMessage(sock, msg).catch((err) => {
-        logger.error({ err }, 'Error handling message')
-      })
-    }
-  })
-}
-
-// ---- Manejo de mensaje individual ----
-async function handleIncomingMessage(
-  sock: WASocket,
-  msg: proto.IWebMessageInfo
-): Promise<void> {
-  const from = msg.key?.remoteJid ?? ''
-  const isGroup = from.endsWith('@g.us')
-  const phone = from.replace(/@s\.whatsapp\.net|@c\.us|@g\.us/g, '')
-
-  logger.info({ from }, '📩 Message received')
-
-  // Notificar al dashboard que hay una nueva conversación
-  broadcast({ type: 'message', direction: 'in', from, phone })
-
-  // 1) Crear/actualizar contacto en CRM
-  const customer = await upsertCustomer(phone, isGroup)
-
-  // 2) Extraer texto (o transcribir audio)
-  let text: string | null = null
-  const message = msg.message
-  if (!message) return
-  const audio = (message as any).audioMessage
-
-  if ((message as any).conversation) {
-    text = (message as any).conversation
-  } else if ((message as any).extendedTextMessage?.text) {
-    text = (message as any).extendedTextMessage.text
-  } else if (audio) {
-    text = await transcribeAudio(sock, msg, audio)
-  } else if ((message as any).imageMessage?.caption) {
-    text = (message as any).imageMessage.caption || '[imagen]'
-  } else if ((message as any).documentMessage?.caption) {
-    text = (message as any).documentMessage.caption || '[documento]'
-  } else if ((message as any).videoMessage?.caption) {
-    text = (message as any).videoMessage.caption || '[video]'
-  }
-
-  if (!text) return
-
-  // 3) Enviar al ai-agent
-  const agentReply = await processWithAgent(text, customer.id, phone)
-  if (!agentReply) return
-
-  // 4) Responder al usuario en WhatsApp
-  await sock.sendMessage(from, { text: agentReply })
-
-  // 5) Notificar al dashboard
-  broadcast({
-    type: 'message',
-    direction: 'out',
-    from,
-    reply: agentReply,
-    text,
-  })
-}
-
-// ---- CRM: upsert customer ----
+// ---- CRM ----
 async function upsertCustomer(phone: string, isGroup: boolean) {
   try {
     const name = isGroup ? `Grupo ${phone}` : phone
@@ -342,46 +146,12 @@ async function upsertCustomer(phone: string, isGroup: boolean) {
       { timeout: 10000 },
     )
     return res.data
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'CRM: failed to upsert customer')
+  } catch {
     return { id: `tmp-${phone}`, phone, name: phone }
   }
 }
 
-// ---- Voice engine: transcribir audio ----
-async function transcribeAudio(
-  sock: WASocket,
-  msg: proto.IWebMessageInfo,
-  audio: any,
-): Promise<string | null> {
-  try {
-    const downloadFn = (sock as any).downloadMediaMessage
-    if (!downloadFn) {
-      return '[nota de voz — descargador no disponible]'
-    }
-    const stream = await downloadFn.call(sock, { message: msg.message })
-    const buffer = await stream.toBuffer()
-    logger.info({ size: buffer.length, mimetype: audio?.mimetype }, '🎙️ Audio received')
-
-    const FormData = (await import('form-data')).default
-    const form = new FormData()
-    form.append('audio', buffer, {
-      filename: 'audio.ogg',
-      contentType: audio?.mimetype ?? 'audio/ogg',
-    })
-
-    const res = await axios.post(`${VOICE_ENGINE_URL}/api/stt`, form, {
-      headers: form.getHeaders(),
-      timeout: 30000,
-    })
-    return res.data?.text ? `[nota de voz transcrita] ${res.data.text}` : null
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Voice engine: failed to transcribe')
-    return '[nota de voz — no pude transcribir]'
-  }
-}
-
-// ---- AI agent: procesar mensaje ----
+// ---- AI Agent ----
 async function processWithAgent(
   text: string,
   customerId: string,
@@ -394,21 +164,112 @@ async function processWithAgent(
         department: AGENT_DEPARTMENT,
         messages: [{ role: 'user', content: text }],
         customerId,
-        context: { source: 'whatsapp', phone },
+        context: { source: 'whatsapp', phone, provider: PROVIDER },
       },
       { timeout: 30000 },
     )
     return res.data?.reply ?? null
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'AI agent: failed to process')
+    logger.error({ err: (err as Error).message }, 'AI agent failed')
     return null
   }
 }
 
+// ---- Voice Engine (audio transcription) ----
+async function transcribeAudio(buffer: Buffer, mimetype: string): Promise<string | null> {
+  try {
+    const FormData = (await import('form-data')).default
+    const form = new FormData()
+    form.append('audio', buffer, { filename: 'audio.ogg', contentType: mimetype })
+    const res = await axios.post(`${VOICE_ENGINE_URL}/api/stt`, form, {
+      headers: form.getHeaders(),
+      timeout: 30000,
+    })
+    return res.data?.text ?? null
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Voice engine failed')
+    return null
+  }
+}
+
+// ---- Pipeline: procesar mensaje entrante ----
+async function handleMessage(transport: WhatsAppTransport, msg: any) {
+  const { phone, text, isGroup, hasAudio, raw } = msg
+
+  logger.info({ phone }, '📩 Message received')
+
+  const customer = await upsertCustomer(phone, isGroup)
+
+  let finalText = text
+
+  if (hasAudio && raw) {
+    // En Baileys se puede descargar el audio
+    const downloadFn = (raw as any)?.downloadMediaMessage
+    if (downloadFn) {
+      try {
+        const stream = await downloadFn.call(raw, { message: raw.message })
+        const buffer = await stream.toBuffer()
+        const transcript = await transcribeAudio(buffer, 'audio/ogg')
+        if (transcript) finalText = `[nota de voz transcrita] ${transcript}`
+      } catch {}
+    }
+  }
+
+  const agentReply = await processWithAgent(finalText, customer.id, phone)
+  if (!agentReply) return
+
+  await transport.sendMessage(phone, agentReply)
+
+  broadcast({
+    type: 'message',
+    direction: 'out',
+    phone,
+    reply: agentReply,
+  })
+}
+
 // ---- Init ----
 async function main() {
-  await startWhatsAppClient()
-  logger.info('WhatsApp Worker initialized')
+  logger.info({ provider: PROVIDER }, 'Creating WhatsApp transport')
+
+  const transport: WhatsAppTransport = createWhatsAppTransport({
+    provider: PROVIDER,
+    sessionDir: SESSION_DIR,
+    metaToken: META_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: WEBHOOK_VERIFY_TOKEN,
+    webhookPort: PORT,
+  })
+
+  // Registrar callbacks
+  transport.onMessage(async (msg) => {
+    await handleMessage(transport, msg).catch((err) =>
+      logger.error({ err }, 'Handle message error'),
+    )
+  })
+
+  transport.onStatusChange((status, data) => {
+    transportStatus = status
+    logger.info({ status, data }, 'Transport status changed')
+
+    if (status === 'qr_pending' && data?.qr) {
+      currentQR = data.qr
+      broadcast({ type: 'qr', data: data.qr, generated: true })
+    }
+
+    if (status === 'connected') {
+      currentQR = null
+      broadcast({ type: 'status', connected: true, qr_available: false, provider: PROVIDER })
+    }
+
+    if (status === 'disconnected' || status === 'error') {
+      currentQR = null
+      broadcast({ type: 'status', connected: false, qr_available: false, error: data?.message })
+    }
+  })
+
+  await transport.initialize()
+  logger.info({ provider: PROVIDER }, 'WhatsApp Worker initialized')
 }
 
 main().catch((err) => {
