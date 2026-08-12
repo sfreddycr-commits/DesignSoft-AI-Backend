@@ -1,9 +1,10 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-RUN corepack enable
-COPY packages/hermes-agent/package.json ./
+RUN apk add --no-cache python3 make g++ \
+  && corepack enable
+COPY package.json ./
 RUN npm install
-COPY packages/hermes-agent/ ./
+COPY . .
 RUN npm run build
 
 FROM node:22-alpine

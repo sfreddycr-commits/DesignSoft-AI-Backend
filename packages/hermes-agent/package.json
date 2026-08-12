@@ -1,6 +1,6 @@
 {
   "name": "@dsai/hermes-agent",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DesignSoft AI - Hermes Agent (the brain)",
   "type": "module",
   "main": "dist/index.js",
@@ -12,11 +12,14 @@
   "dependencies": {
     "express": "^4.21.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.0",
+    "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/cors": "^2.8.17",
+    "@types/better-sqlite3": "^7.6.8",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "tsx": "^4.19.0"
