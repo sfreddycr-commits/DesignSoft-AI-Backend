@@ -84,8 +84,30 @@ async function handleCall(channelId: string) {
     await ariPost(`/channels/${channelId}/answer`)
     log('Contestado')
 
-    // Greeting (solo beep, sin TTS para ahorrar latencia)
-    try { await ariPost(`/channels/${channelId}/play`, { media: 'tone:beep' }) } catch {}
+    // Greeting con sound:greeting (16KB WAV que SÍ existe)
+    try { await ariPost(`/channels/${channelId}/play`, { media: 'sound:greeting' }) } catch (e: any) { log(`Greeting error: ${e.message}`) }
+    await sleep(500)
+
+    // Generar saludo personalizado con ElevenLabs (voces naturales)
+    if (ELEVENLABS_API_KEY) {
+      try {
+        const text = 'Hola, soy Hermes, el asistente virtual de DesignSoft. ¿En qué puedo ayudarte hoy?'
+        const r = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+          text, model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }, {
+          headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+          responseType: 'arraybuffer', timeout: 15000,
+        })
+        const fname = `greeting-${Date.now()}.mp3`
+        const fpath = `${SOUNDS_DIR}/${fname}`
+        fs.writeFileSync(fpath, Buffer.from(r.data))
+        const sname = `custom/${path.basename(fpath).replace('.mp3','')}`
+        log(`TTS greeting: ${sname}`)
+        await ariPost(`/channels/${channelId}/play`, { media: `sound:${sname}` }).catch((e: any) => log(`TTS play: ${e.message}`))
+      } catch (e: any) { log(`TTS error: ${e.message}`) }
+    }
+    await sleep(1000)
 
     // Ciclo de 5 turnos
     for (let turn = 0; turn < 5; turn++) {
@@ -93,7 +115,7 @@ async function handleCall(channelId: string) {
       const recName = `hrec-${Date.now()}`
       try {
         await ariPost(`/channels/${channelId}/record`, {
-          name: recName, format: 'wav', maxDurationSeconds: 8, maxSilenceSeconds: 2, beep: true,
+          name: recName, format: 'wav', maxDurationSeconds: 12, maxSilenceSeconds: 4, beep: false,
         })
         await sleep(9000)
         try { await ariPost(`/recordings/live/${recName}/stop`) } catch {}
