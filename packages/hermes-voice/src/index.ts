@@ -1,161 +1,152 @@
 // ============================================================
-// Hermes Voice Gateway — Asterisk ARI + Hermes Agent
+// Hermes Voice Gateway — Deepgram + ElevenLabs (REST mode)
 // ============================================================
-// Conecta a Asterisk via ARI, registra Stasis(hermes-voice),
-// y canaliza llamadas de voz hacia Hermes Agent.
+// Flujo: llamada → grabar audio → Deepgram REST → Hermes → ElevenLabs → reproducir
 // ============================================================
 
 import 'dotenv/config'
 import axios from 'axios'
 import WebSocket from 'ws'
+import fs from 'fs'
+import FormData from 'form-data'
 
 const ARI_URL = process.env.ARI_URL ?? 'http://187.124.151.78:8088'
 const ARI_USER = process.env.ARI_USER ?? 'admin'
-const ARI_PASS = process.env.ARI_PASS ?? 'dsai_ari_pass_2026'
-const HERMES_URL = process.env.HERMES_URL ?? 'http://hermes-agent:5000'
-const STT_TTS_URL = process.env.STT_TTS_URL ?? 'http://voice-engine:3000'
+const ARI_PASS = process.env.ARI_PASS ?? 'adminpass'
+const HERMES_URL = process.env.HERMES_URL ?? 'http://dsai-hermes-agent-f31skt:5000'
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY ?? ''
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY ?? ''
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID ?? 'pNInz6obpgDQGcFmaJgB'
+const SOUNDS_DIR = process.env.SOUNDS_DIR ?? '/var/lib/asterisk/sounds/custom'
 
-const AUTH = Buffer.from(`${ARI_USER}:${ARI_PASS}`).toString('base64')
-const AUTH_HEADER = { Authorization: `Basic ${AUTH}` }
+const AUTH = `${ARI_USER}:${ARI_PASS}`
+const ARI_HEADERS = { Authorization: `Basic ${Buffer.from(AUTH).toString('base64')}`, 'Content-Type': 'application/json' }
 
 function log(msg: string) { console.log(`[hermes-voice] ${msg}`) }
 
 async function ariGet(path: string) {
-  const r = await axios.get(`${ARI_URL}/ari${path}`, { headers: AUTH_HEADER })
+  const r = await axios.get(`${ARI_URL}/ari${path}`, { headers: ARI_HEADERS })
   return r.data
 }
 
 async function ariPost(path: string, body?: any) {
-  const r = await axios.post(`${ARI_URL}/ari${path}`, body ?? {}, { headers: AUTH_HEADER })
+  const r = await axios.post(`${ARI_URL}/ari${path}`, body ?? {}, { headers: ARI_HEADERS })
   return r.data
 }
 
-async function main() {
-  log('Starting Hermes Voice Gateway')
-  log(`ARI: ${ARI_URL}`)
-  log(`Hermes: ${HERMES_URL}`)
-
-  // 1. Conectar a ARI via WebSocket para eventos Stasis
-  const wsUrl = `${ARI_URL.replace('http', 'ws')}/ari/events?api_key=${ARI_USER}:${ARI_PASS}&app=hermes-voice`
-  log(`Connecting to ARI WS: ${wsUrl.replace(ARI_PASS, '***')}`)
-  const ws = new WebSocket(wsUrl, { headers: { Authorization: AUTH_HEADER.Authorization } })
-
-  ws.on('open', () => log('Connected to ARI WebSocket'))
-
-  ws.on('message', async (raw) => {
-    try {
-      const event = JSON.parse(raw.toString())
-      if (event.type === 'StasisStart') {
-        await handleCall(event.channel.id)
-      } else if (event.type === 'StasisEnd') {
-        log(`Call ended: ${event.channel.id}`)
-      }
-    } catch (err: any) {
-      console.error('[hermes-voice] event error:', err.message)
-    }
-  })
-
-  ws.on('error', (err) => log(`WS error: ${err.message}`))
-  ws.on('close', () => {
-    log('WS closed, reconnecting in 5s...')
-    setTimeout(main, 5000)
-  })
-
-  log('Voice Gateway ready. Waiting for calls on Stasis(hermes-voice)...')
-}
-
-async function handleCall(channelId: string) {
-  log(`Call received: ${channelId}`)
-  const phone = channelId.replace(/\D/g, '').slice(-8) || 'unknown'
-
-  try {
-    // 1. Contestar
-    await ariPost(`/channels/${channelId}/answer`)
-    log('Answered channel')
-
-    // 2. Reproducir greeting
-    try {
-      await ariPost(`/channels/${channelId}/play`, { media: 'sound:beep' })
-    } catch {
-      // sound might not exist, continue
-    }
-
-    // 3. Ciclo de conversación (max 5 turnos)
-    for (let turn = 0; turn < 5; turn++) {
-      // Grabar audio del caller (3 segundos de silencio máximo)
-      const recordingName = `hermes-${channelId}-${turn}`
-      try {
-        await ariPost(`/channels/${channelId}/record`, {
-          name: recordingName,
-          format: 'wav',
-          maxDurationSeconds: 5,
-          maxSilenceSeconds: 2,
-          beep: true,
-        })
-        // Esperar a que termine la grabación
-        await sleep(6000)
-        await ariPost(`/recordings/live/${recordingName}/stop`)
-      } catch {
-        // recording might have ended on silence
-      }
-
-      // Transcribir audio
-      let transcript = ''
-      try {
-        const audioUrl = `${ARI_URL}/ari/recordings/stored/${recordingName}/file`
-        const resp = await axios.post(`${STT_TTS_URL}/api/transcribe`, {
-          audio_url: audioUrl,
-          auth: AUTH,
-        }, { timeout: 15000 })
-        transcript = resp.data?.text ?? ''
-      } catch {
-        transcript = ''
-      }
-
-      if (!transcript || transcript.trim().length < 2) {
-        log('No speech detected, ending call')
-        break
-      }
-      log(`Transcript: "${transcript}"`)
-
-      // Enviar a Hermes Agent
-      let agentReply = ''
-      try {
-        const resp = await axios.post(`${HERMES_URL}/messages`, {
-          phone,
-          message: transcript,
-          source: 'voice',
-        }, { timeout: 15000 })
-        agentReply = resp.data?.reply ?? ''
-      } catch {
-        agentReply = 'Lo siento, no pude procesar tu mensaje.'
-      }
-
-      if (!agentReply) break
-      log(`Agent reply: "${agentReply.slice(0, 100)}..."`)
-
-      // Convertir texto a voz y reproducir
-      try {
-        const ttsResp = await axios.post(`${STT_TTS_URL}/api/tts`, {
-          text: agentReply,
-        }, { timeout: 15000 })
-
-        if (ttsResp.data?.audio_url) {
-          await ariPost(`/channels/${channelId}/play`, { media: ttsResp.data.audio_url })
-        }
-      } catch {
-        log('TTS failed, cannot play response')
-        break
-      }
-    }
-  } catch (err: any) {
-    log(`Error in call: ${err.message}`)
-  }
+async function ariGetBuffer(path: string) {
+  const r = await axios.get(`${ARI_URL}/ari${path}`, { headers: ARI_HEADERS, responseType: 'arraybuffer' })
+  return Buffer.from(r.data)
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
-main().catch(err => {
-  console.error('[hermes-voice] fatal:', err)
-  process.exit(1)
-})
+// ============================================================
+// MAIN
+// ============================================================
+async function main() {
+  log('=== Hermes Voice Gateway ===')
+  log(`Deepgram: ${DEEPGRAM_API_KEY ? '✅' : '❌ sin key'}`)
+  log(`ElevenLabs: ${ELEVENLABS_API_KEY ? '✅' : '❌ sin key'}`)
+
+  if (!fs.existsSync(SOUNDS_DIR)) fs.mkdirSync(SOUNDS_DIR, { recursive: true })
+
+  connectToARI()
+}
+
+function connectToARI() {
+  const wsUrl = `${ARI_URL.replace('http', 'ws')}/ari/events?api_key=${ARI_USER}:${ARI_PASS}&app=hermes-voice`
+  const ws = new WebSocket(wsUrl)
+
+  ws.on('open', () => log('Conectado a ARI'))
+  ws.on('close', () => { log('WS closed, reconectando...'); setTimeout(connectToARI, 5000) })
+  ws.on('error', () => {})
+
+  ws.on('message', async (raw) => {
+    const event = JSON.parse(raw.toString())
+    if (event.type === 'StasisStart') await handleCall(event.channel.id)
+    if (event.type === 'StasisEnd') log(`Llamada finalizada: ${event.channel.id}`)
+  })
+}
+
+async function handleCall(channelId: string) {
+  const phone = channelId.replace(/\D/g, '').slice(-8) || 'unknown'
+  log(`📞 Llamada: ${channelId}`)
+
+  try {
+    await ariPost(`/channels/${channelId}/answer`)
+    log('Contestado')
+
+    // Greeting (solo beep, sin TTS para ahorrar latencia)
+    try { await ariPost(`/channels/${channelId}/play`, { media: 'tone:beep' }) } catch {}
+
+    // Ciclo de 5 turnos
+    for (let turn = 0; turn < 5; turn++) {
+      // Grabar audio del caller
+      const recName = `hrec-${Date.now()}`
+      try {
+        await ariPost(`/channels/${channelId}/record`, {
+          name: recName, format: 'wav', maxDurationSeconds: 8, maxSilenceSeconds: 2, beep: true,
+        })
+        await sleep(9000)
+        try { await ariPost(`/recordings/live/${recName}/stop`) } catch {}
+      } catch (err: any) { log(`Record error: ${err.message}`); break }
+
+      // Descargar audio
+      let audioBuffer: Buffer | null = null
+      try { audioBuffer = await ariGetBuffer(`/recordings/stored/${recName}/file`) } catch {}
+      if (!audioBuffer || audioBuffer.length < 1000) { log('Audio muy corto, colgando'); break }
+
+      // Deepgram STT
+      let transcript = ''
+      if (DEEPGRAM_API_KEY) {
+        try {
+          const form = new FormData()
+          form.append('audio', audioBuffer, { filename: 'audio.wav', contentType: 'audio/wav' })
+          const r = await axios.post(`https://api.deepgram.com/v1/listen?model=nova-2&language=es&smart_format=true`, audioBuffer, {
+            headers: { Authorization: `Token ${DEEPGRAM_API_KEY}`, 'Content-Type': 'audio/wav' },
+            timeout: 15000,
+          })
+          transcript = r.data?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? ''
+        } catch (err: any) { log(`Deepgram error: ${err.message}`) }
+      } else {
+        transcript = '[Deepgram no configurado]'
+      }
+      if (!transcript || transcript.trim().length < 2) { log('Sin transcripción'); break }
+      log(`🗣️ "${transcript}"`)
+
+      // Hermes Agent
+      let reply = ''
+      try {
+        const r = await axios.post(`${HERMES_URL}/messages`, { phone, message: transcript, source: 'voice' }, { timeout: 20000 })
+        reply = r.data?.reply ?? ''
+      } catch (err: any) { log(`Hermes error: ${err.message}`); break }
+      if (!reply) break
+      log(`🧠 "${reply.slice(0, 120)}..."`)
+
+      // ElevenLabs TTS
+      if (ELEVENLABS_API_KEY) {
+        try {
+          const r = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+            text: reply, model_id: 'eleven_multilingual_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }, {
+            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+            responseType: 'arraybuffer', timeout: 15000,
+          })
+
+          const wavFile = `${SOUNDS_DIR}/tts-${Date.now()}.mp3`
+          fs.writeFileSync(wavFile, Buffer.from(r.data))
+          const soundName = `custom/${path.basename(wavFile).replace('.mp3', '')}`
+          log(`TTS: ${soundName}`)
+
+          // Reproducir
+          await ariPost(`/channels/${channelId}/play`, { media: `sound:${soundName}` })
+        } catch (err: any) { log(`TTS error: ${err.message}`); break }
+      }
+    }
+  } catch (err: any) { log(`Error: ${err.message}`) }
+}
+
+import path from 'path'
+main().catch(err => { console.error('[hermes-voice] fatal:', err); process.exit(1) })
